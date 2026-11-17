@@ -26,13 +26,26 @@ private class BadRequest(msg: String) : Exception(msg)
 
 class GeminiClient(private val apiKey: String, private val model: String) {
 
+    /** Mensagens de estado (esperas, novas tentativas) para mostrar no ecrã. */
+    @Volatile var onStatus: ((String) -> Unit)? = null
+
+    /** Pede ao modelo para "pensar" pouco (muito mais rápido). Desliga-se se o modelo não aceitar. */
+    @Volatile private var useThinkingLevel = true
+
     private val base = "https://generativelanguage.googleapis.com/v1beta"
 
     /** Bloqueante: chamar fora da thread principal. */
     fun analyzePage(jpeg: ByteArray, page: Int, total: Int): PageResult {
         val b64 = Base64.encodeToString(jpeg, Base64.NO_WRAP)
         val text = try {
-            generate(b64, page, total, withSchema = true)
+            try {
+                generate(b64, page, total, withSchema = true)
+            } catch (e: BadRequest) {
+                if (useThinkingLevel && e.message.orEmpty().contains("think", true)) {
+                    useThinkingLevel = false
+                    generate(b64, page, total, withSchema = true)
+                } else throw e
+            }
         } catch (e: BadRequest) {
             // Alguns modelos não aceitam o esquema: tenta só com JSON livre.
             try {
@@ -65,6 +78,7 @@ class GeminiClient(private val apiKey: String, private val model: String) {
             put("responseMimeType", "application/json")
             put("maxOutputTokens", 32768)
             if (withSchema) put("responseSchema", schema())
+            if (useThinkingLevel) put("thinkingConfig", JSONObject().put("thinkingLevel", "low"))
         }
         val body = JSONObject().apply {
             put("contents", JSONArray().put(JSONObject().apply {
@@ -77,7 +91,7 @@ class GeminiClient(private val apiKey: String, private val model: String) {
             }))
             put("generationConfig", genConfig)
         }
-        val resp = postWithRetry("$base/models/$model:generateContent", body.toString())
+        val resp = postWithRetry("$base/models/$model:generateContent", body.toString(), page)
         val cand = resp.optJSONArray("candidates")?.optJSONObject(0)
             ?: throw IOException("Resposta vazia do Gemini")
         val parts = cand.optJSONObject("content")?.optJSONArray("parts") ?: JSONArray()
@@ -90,8 +104,9 @@ class GeminiClient(private val apiKey: String, private val model: String) {
         return sb.toString()
     }
 
-    private fun postWithRetry(url: String, body: String): JSONObject {
+    private fun postWithRetry(url: String, body: String, page: Int): JSONObject {
         var lastError = "erro desconhecido"
+        var timeouts = 0
         for (attempt in 0 until 6) {
             val conn = open(url, "POST")
             try {
@@ -109,10 +124,12 @@ class GeminiClient(private val apiKey: String, private val model: String) {
                         val secs = Regex("\"retryDelay\"\\s*:\\s*\"(\\d+)").find(text)
                             ?.groupValues?.get(1)?.toLongOrNull() ?: (30L * (attempt + 1))
                         lastError = "limite por minuto"
+                        onStatus?.invoke("pág. $page: limite por minuto do Gemini, a aguardar ${secs + 2} s")
                         Thread.sleep((secs + 2) * 1000)
                     }
                     code >= 500 -> {
                         lastError = "serviço do Gemini indisponível ($code)"
+                        onStatus?.invoke("pág. $page: Gemini ocupado ($code), nova tentativa")
                         Thread.sleep(10_000L * (attempt + 1))
                     }
                     code == 400 -> {
@@ -123,8 +140,13 @@ class GeminiClient(private val apiKey: String, private val model: String) {
                     }
                     else -> throw FatalError(describeError(code, text))
                 }
+            } catch (e: java.net.SocketTimeoutException) {
+                lastError = "o Gemini não respondeu em 3 minutos"
+                onStatus?.invoke("pág. $page: o Gemini demorou demasiado, nova tentativa")
+                if (++timeouts >= 2) break
             } catch (e: IOException) {
                 lastError = e.message ?: "erro de rede"
+                onStatus?.invoke("pág. $page: erro de rede ($lastError), nova tentativa")
                 Thread.sleep(5_000L * (attempt + 1))
             } finally {
                 conn.disconnect()
@@ -149,7 +171,7 @@ class GeminiClient(private val apiKey: String, private val model: String) {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.requestMethod = method
         conn.connectTimeout = 30_000
-        conn.readTimeout = 240_000
+        conn.readTimeout = 180_000
         conn.setRequestProperty("x-goog-api-key", apiKey)
         return conn
     }

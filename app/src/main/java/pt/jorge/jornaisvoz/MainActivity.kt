@@ -127,7 +127,7 @@ class MainActivity : Activity() {
         playPause.text = if (c?.isPlaying == true) "⏸" else "▶"
 
         val papers = Repo.list(this)
-        val sig = papers.joinToString("|") { "${it.id}${it.status}${it.message}${it.progress}" }
+        val sig = papers.joinToString("|") { "${it.id}${it.status}${it.message}${it.progress}${it.id in ProcessService.active}" }
         if (sig == lastSignature) return
         lastSignature = sig
         list.removeAllViews()
@@ -151,9 +151,11 @@ class MainActivity : Activity() {
             textSize = 17f
             setTypeface(typeface, Typeface.BOLD)
         })
-        val status = when (p.status) {
-            Paper.STATUS_READY -> p.message.ifBlank { "${p.articles.size} notícias" }
-            Paper.STATUS_ERROR -> "Erro: ${p.message}"
+        val busy = p.id in ProcessService.active
+        val status = when {
+            p.status == Paper.STATUS_READY -> p.message.ifBlank { "${p.articles.size} notícias" }
+            p.status == Paper.STATUS_ERROR -> "Erro: ${p.message}"
+            !busy && p.status == Paper.STATUS_PROCESSING -> "Interrompido. Carregue em Refazer."
             else -> p.message.ifBlank { "A preparar…" }
         }
         card.addView(TextView(this).apply { text = status })
@@ -161,10 +163,10 @@ class MainActivity : Activity() {
         val buttons = mutableListOf<View>()
         if (p.isReady) buttons += button("Ouvir") { play(p) }
         if (p.isReady) buttons += button("Títulos") { showTitles(p) }
-        if (p.status != Paper.STATUS_PROCESSING && Repo.sourcePdf(this, p.id).exists()) {
+        if (!busy && Repo.sourcePdf(this, p.id).exists()) {
             buttons += button("Refazer") { confirm("Voltar a ler o PDF com o Gemini?") { ProcessService.start(this, p.id) } }
         }
-        if (p.status != Paper.STATUS_PROCESSING) {
+        if (!busy) {
             buttons += button("Apagar") { confirm("Apagar ${p.name}?") { Repo.delete(this, p.id); lastSignature = ""; refresh() } }
         }
         if (buttons.isNotEmpty()) card.addView(row(*buttons.toTypedArray()))

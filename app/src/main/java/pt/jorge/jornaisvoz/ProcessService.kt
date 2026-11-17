@@ -23,7 +23,13 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
+import java.io.File
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -43,6 +49,7 @@ class ProcessService : Service() {
         tts = TtsSynth(this)
         scope.launch {
             for ((pid, audioOnly) in queue) {
+                active.add(pid)
                 try {
                     if (audioOnly) regenerateAudio(pid) else process(pid)
                 } catch (e: Exception) {
@@ -52,6 +59,7 @@ class ProcessService : Service() {
                         Repo.save(this@ProcessService, it)
                     }
                 }
+                active.remove(pid)
                 if (pendingCount.decrementAndGet() <= 0) {
                     ServiceCompat.stopForeground(this@ProcessService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                     stopSelf(lastStartId)
@@ -107,54 +115,79 @@ class ProcessService : Service() {
 
         val src = Repo.sourcePdf(ctx, pid)
         val client = GeminiClient(prefs.apiKey, prefs.model)
-        val merged = mutableListOf<Article>()
-        var pendingContinuation: Article? = null
-        var failedPages = 0
-        var lastRequest = 0L
+        client.onStatus = { msg -> update(p, msg) }
 
+        // 1) Prepara as imagens das páginas (rápido) e guarda-as em ficheiros temporários.
+        val pagesDir = File(cacheDir, "pages_$pid").apply { deleteRecursively(); mkdirs() }
         val pfd = ParcelFileDescriptor.open(src, ParcelFileDescriptor.MODE_READ_ONLY)
         val renderer = PdfRenderer(pfd)
+        val n = renderer.pageCount
+        p.total = n
         try {
-            val n = renderer.pageCount
-            p.total = n
             for (i in 0 until n) {
-                p.progress = i
-                update(p, "A ler página ${i + 1} de $n")
-                val jpeg = renderPage(renderer, i)
-                // Ritmo: no máximo um pedido a cada 5 segundos (limites do escalão gratuito).
-                val wait = 5000 - (System.currentTimeMillis() - lastRequest)
-                if (wait > 0) delay(wait)
-                lastRequest = System.currentTimeMillis()
-                val res = try {
-                    client.analyzePage(jpeg, i + 1, n)
-                } catch (e: FatalError) {
-                    throw e
-                } catch (e: Exception) {
-                    failedPages++
-                    null
-                } ?: continue
-
-                if (p.name.isBlank() && res.paperName.isNotBlank()) p.name = res.paperName
-                for (a in res.articles) {
-                    if (a.type == "chamada") continue
-                    if (a.continuesPrevious && merged.isNotEmpty() && (a.title.isBlank() || pendingContinuation != null)) {
-                        val target = pendingContinuation ?: merged.last()
-                        target.text = target.text.trimEnd() + "\n" + a.text
-                        if (!a.continuesNext) pendingContinuation = null
-                        continue
-                    }
-                    if (a.text.length < 80) continue
-                    val title = a.title.ifBlank { a.text.split(' ').take(10).joinToString(" ") + "…" }
-                    val art = Article(i + 1, a.section, title, a.lead, a.text)
-                    merged.add(art)
-                    pendingContinuation = if (a.continuesNext) art else null
-                }
-                p.articles = merged.toMutableList()
-                Repo.save(ctx, p)
+                update(p, "A preparar página ${i + 1} de $n")
+                File(pagesDir, "$i.jpg").writeBytes(renderPage(renderer, i))
             }
         } finally {
             renderer.close()
             pfd.close()
+        }
+
+        // 2) Envia ao Gemini 3 páginas de cada vez.
+        val results = arrayOfNulls<PageResult>(n)
+        val done = AtomicInteger(0)
+        var failedPages = 0
+        val sem = Semaphore(PARALLEL)
+        val pace = Mutex()
+        var lastRequest = 0L
+        update(p, "A ler páginas com o Gemini (0 de $n)")
+        coroutineScope {
+            for (i in 0 until n) {
+                launch(Dispatchers.IO) {
+                    sem.withPermit {
+                        pace.withLock {
+                            val wait = 2500 - (System.currentTimeMillis() - lastRequest)
+                            if (wait > 0) delay(wait)
+                            lastRequest = System.currentTimeMillis()
+                        }
+                        val jpeg = File(pagesDir, "$i.jpg").readBytes()
+                        results[i] = try {
+                            client.analyzePage(jpeg, i + 1, n)
+                        } catch (e: FatalError) {
+                            throw e
+                        } catch (e: Exception) {
+                            synchronized(results) { failedPages++ }
+                            null
+                        }
+                        val d = done.incrementAndGet()
+                        p.progress = d
+                        update(p, "A ler páginas com o Gemini ($d de $n)")
+                    }
+                }
+            }
+        }
+        pagesDir.deleteRecursively()
+
+        // 3) Junta as notícias pela ordem das páginas.
+        val merged = mutableListOf<Article>()
+        var pendingContinuation: Article? = null
+        for (i in 0 until n) {
+            val res = results[i] ?: continue
+            if (p.name.isBlank() && res.paperName.isNotBlank()) p.name = res.paperName
+            for (a in res.articles) {
+                if (a.type == "chamada") continue
+                if (a.continuesPrevious && merged.isNotEmpty() && (a.title.isBlank() || pendingContinuation != null)) {
+                    val target = pendingContinuation ?: merged.last()
+                    target.text = target.text.trimEnd() + "\n" + a.text
+                    if (!a.continuesNext) pendingContinuation = null
+                    continue
+                }
+                if (a.text.length < 80) continue
+                val title = a.title.ifBlank { a.text.split(' ').take(10).joinToString(" ") + "…" }
+                val art = Article(i + 1, a.section, title, a.lead, a.text)
+                merged.add(art)
+                pendingContinuation = if (a.continuesNext) art else null
+            }
         }
 
         if (merged.isEmpty()) {
@@ -170,6 +203,7 @@ class ProcessService : Service() {
         p.status = Paper.STATUS_READY
         p.message = "${merged.size} notícias" + if (failedPages > 0) " ($failedPages páginas não lidas)" else ""
         Repo.save(ctx, p)
+        if (failedPages == 0) src.delete() // poupa espaço: o PDF já não é preciso
         Notif.done(ctx, p)
     }
 
@@ -214,6 +248,9 @@ class ProcessService : Service() {
     }
 
     companion object {
+        const val PARALLEL = 3
+        /** Jornais a ser processados neste momento. */
+        val active: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
         const val EXTRA_PID = "pid"
         const val EXTRA_AUDIO_ONLY = "audioOnly"
 
