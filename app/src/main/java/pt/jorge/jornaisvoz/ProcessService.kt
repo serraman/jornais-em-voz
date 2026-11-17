@@ -108,6 +108,7 @@ class ProcessService : Service() {
             Notif.done(ctx, p)
             return
         }
+        p.name = Repo.nameFromFile(p.name + ".pdf")
         p.status = Paper.STATUS_PROCESSING
         p.articles.clear()
         p.progress = 0
@@ -116,6 +117,7 @@ class ProcessService : Service() {
         val src = Repo.sourcePdf(ctx, pid)
         val client = GeminiClient(prefs.apiKey, prefs.model)
         client.onStatus = { msg -> update(p, msg) }
+        client.pickFallback()
 
         // 1) Prepara as imagens das páginas (rápido) e guarda-as em ficheiros temporários.
         val pagesDir = File(cacheDir, "pages_$pid").apply { deleteRecursively(); mkdirs() }

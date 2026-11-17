@@ -32,6 +32,23 @@ class GeminiClient(private val apiKey: String, private val model: String) {
     /** Pede ao modelo para "pensar" pouco (muito mais rápido). Desliga-se se o modelo não aceitar. */
     @Volatile private var useThinkingLevel = true
 
+    /** Modelo alternativo, usado numa página quando o principal está sobrecarregado (503). */
+    @Volatile var fallbackModel: String? = null
+
+    /** Escolhe um modelo alternativo entre os disponíveis com esta chave. */
+    fun pickFallback() {
+        val models = try { listModels() } catch (e: Exception) { return }
+        val prefs = listOf(
+            "gemini-3.6-flash", "gemini-flash-lite-latest", "gemini-3.5-flash-lite",
+            "gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-3.8-flash"
+        )
+        fallbackModel = prefs.firstOrNull { it != model && it in models }
+            ?: models.firstOrNull {
+                it != model && it.contains("flash") && !it.contains("image") &&
+                    !it.contains("tts") && !it.contains("live") && !it.contains("audio")
+            }
+    }
+
     private val base = "https://generativelanguage.googleapis.com/v1beta"
 
     /** Bloqueante: chamar fora da thread principal. */
@@ -91,7 +108,7 @@ class GeminiClient(private val apiKey: String, private val model: String) {
             }))
             put("generationConfig", genConfig)
         }
-        val resp = postWithRetry("$base/models/$model:generateContent", body.toString(), page)
+        val resp = postWithRetry(body.toString(), page)
         val cand = resp.optJSONArray("candidates")?.optJSONObject(0)
             ?: throw IOException("Resposta vazia do Gemini")
         val parts = cand.optJSONObject("content")?.optJSONArray("parts") ?: JSONArray()
@@ -104,11 +121,14 @@ class GeminiClient(private val apiKey: String, private val model: String) {
         return sb.toString()
     }
 
-    private fun postWithRetry(url: String, body: String, page: Int): JSONObject {
+    private fun postWithRetry(body: String, page: Int): JSONObject {
         var lastError = "erro desconhecido"
         var timeouts = 0
-        for (attempt in 0 until 6) {
-            val conn = open(url, "POST")
+        var busy = 0
+        for (attempt in 0 until 8) {
+            val alt = fallbackModel
+            val useModel = if (busy >= 2 && alt != null && busy % 2 == 0) alt else model
+            val conn = open("$base/models/$useModel:generateContent", "POST")
             try {
                 conn.doOutput = true
                 conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
@@ -128,9 +148,11 @@ class GeminiClient(private val apiKey: String, private val model: String) {
                         Thread.sleep((secs + 2) * 1000)
                     }
                     code >= 500 -> {
+                        busy++
                         lastError = "serviço do Gemini indisponível ($code)"
-                        onStatus?.invoke("pág. $page: Gemini ocupado ($code), nova tentativa")
-                        Thread.sleep(10_000L * (attempt + 1))
+                        val next = if (busy >= 2 && fallbackModel != null && busy % 2 == 0) " com ${fallbackModel}" else ""
+                        onStatus?.invoke("pág. $page: Gemini ocupado ($code), nova tentativa$next")
+                        Thread.sleep(if (next.isNotEmpty()) 2_000L else 8_000L * busy.coerceAtMost(4))
                     }
                     code == 400 -> {
                         if (text.contains("API key", true) || text.contains("API_KEY", true)) {

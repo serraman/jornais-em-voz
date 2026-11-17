@@ -125,10 +125,17 @@ object Repo {
 
     /** "_20261117-PT__Público_LX_261117_101020.pdf" -> "Público" */
     fun nameFromFile(name: String): String {
-        val base = name.substringBeforeLast('.')
-        Regex("__([^_]+)").find(base)?.let { return it.groupValues[1].trim() }
-        val clean = base.replace('_', ' ').replace('-', ' ').trim()
-        return clean.ifBlank { "Jornal" }
+        var base = name.substringBeforeLast('.')
+        base = base.replace(Regex("\\([^)]*\\)"), " ")             // "(20261117-PT)"
+            .replace(Regex("^[_\\s-]*\\d{8}-[A-Za-z]{2}_*"), " ")    // "_20261117-PT__"
+        val tokens = base.split(Regex("[_\\s]+")).filter { it.isNotBlank() }
+        val words = mutableListOf<String>()
+        for (t in tokens) {
+            val isCode = t.any { it.isDigit() } || (t.length <= 3 && t == t.uppercase() && t.any { it.isLetter() })
+            if (isCode) { if (words.isNotEmpty()) break else continue }
+            words.add(t)
+        }
+        return words.joinToString(" ").replace('-', ' ').trim().ifBlank { "Jornal" }
     }
 }
 
