@@ -127,7 +127,7 @@ class MainActivity : Activity() {
         playPause.text = if (c?.isPlaying == true) "⏸" else "▶"
 
         val papers = Repo.list(this)
-        val sig = papers.joinToString("|") { "${it.id}${it.status}${it.message}${it.progress}${it.id in ProcessService.active}" }
+        val sig = papers.joinToString("|") { "${it.id}${it.status}${it.message}${it.progress}${it.id in ProcessService.active}${it.id in ProcessService.stopRequests}" }
         if (sig == lastSignature) return
         lastSignature = sig
         list.removeAllViews()
@@ -161,8 +161,20 @@ class MainActivity : Activity() {
         card.addView(TextView(this).apply { text = status })
 
         val buttons = mutableListOf<View>()
+        val stopping = p.id in ProcessService.stopRequests
+        if (busy && p.status == Paper.STATUS_PROCESSING && !stopping) {
+            buttons += button("Parar e ouvir o que já leu") {
+                ProcessService.requestStop(p.id); lastSignature = ""; refresh()
+            }
+        }
+        if (busy && stopping) {
+            card.addView(TextView(this).apply { text = "A parar e a preparar o áudio das páginas já lidas…" })
+        }
         if (p.isReady) buttons += button("Ouvir") { play(p) }
         if (p.isReady) buttons += button("Títulos") { showTitles(p) }
+        if (!busy && Repo.sourcePdf(this, p.id).exists() && p.total > 0 && p.pagesRead < p.total) {
+            buttons += button("Continuar") { ProcessService.start(this, p.id, ProcessService.MODE_RESUME) }
+        }
         if (!busy && Repo.sourcePdf(this, p.id).exists()) {
             buttons += button("Refazer") { confirm("Voltar a ler o PDF com o Gemini?") { ProcessService.start(this, p.id) } }
         }

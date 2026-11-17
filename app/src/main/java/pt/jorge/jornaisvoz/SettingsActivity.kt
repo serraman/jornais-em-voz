@@ -111,7 +111,7 @@ class SettingsActivity : Activity() {
         prefs.readLead = lead.isChecked
         keep.text.toString().toIntOrNull()?.let { prefs.keepDays = it }
         if (audioChanged) {
-            Repo.list(this).filter { it.isReady }.forEach { ProcessService.start(this, it.id, audioOnly = true) }
+            Repo.list(this).filter { it.isReady }.forEach { ProcessService.start(this, it.id, ProcessService.MODE_AUDIO) }
         }
         Toast.makeText(this, "Guardado", Toast.LENGTH_SHORT).show()
         finish()

@@ -17,7 +17,7 @@ class PageArticle(
     val continuesNext: Boolean,
 )
 
-class PageResult(val paperName: String, val articles: List<PageArticle>)
+class PageResult(val paperName: String, val articles: List<PageArticle>, val raw: String = "")
 
 /** Erro que não vale a pena repetir (chave inválida, modelo inexistente, limite diário). */
 class FatalError(msg: String) : Exception(msg)
@@ -71,7 +71,7 @@ class GeminiClient(private val apiKey: String, private val model: String) {
                 throw FatalError("O Gemini recusou o pedido: ${e2.message}")
             }
         }
-        return parse(text)
+        return parseImpl(text)
     }
 
     fun listModels(): List<String> {
@@ -244,7 +244,12 @@ Responde só com JSON neste formato:
         }
     }
 
-    private fun parse(raw: String): PageResult {
+    companion object {
+        fun parseResult(raw: String): PageResult = parseImpl(raw)
+    }
+}
+
+private fun parseImpl(raw: String): PageResult {
         var s = raw.trim()
         if (s.startsWith("```")) s = s.substringAfter('\n').substringBeforeLast("```").trim()
         val start = s.indexOf('{')
@@ -267,6 +272,5 @@ Responde só com JSON neste formato:
                 )
             )
         }
-        return PageResult(o.optString("nome_jornal").trim(), list)
-    }
+        return PageResult(o.optString("nome_jornal").trim(), list, raw)
 }

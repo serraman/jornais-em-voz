@@ -25,6 +25,7 @@ class Paper(
     var message: String = ""
     var progress: Int = 0
     var total: Int = 0
+    var pagesRead: Int = 0
     var articles: MutableList<Article> = mutableListOf()
 
     val isReady get() = status == STATUS_READY
@@ -35,7 +36,7 @@ class Paper(
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id); put("name", name); put("created", created)
         put("status", status); put("message", message)
-        put("progress", progress); put("total", total)
+        put("progress", progress); put("total", total); put("pagesRead", pagesRead)
         put("articles", JSONArray().apply {
             articles.forEach { a ->
                 put(JSONObject().apply {
@@ -58,6 +59,7 @@ class Paper(
             p.message = o.optString("message")
             p.progress = o.optInt("progress")
             p.total = o.optInt("total")
+            p.pagesRead = o.optInt("pagesRead")
             val arr = o.optJSONArray("articles") ?: JSONArray()
             for (i in 0 until arr.length()) {
                 val a = arr.getJSONObject(i)
@@ -80,6 +82,7 @@ object Repo {
     fun dir(ctx: Context, pid: String) = File(root(ctx), pid)
     fun sourcePdf(ctx: Context, pid: String) = File(dir(ctx, pid), "source.pdf")
     fun headlineFile(ctx: Context, pid: String, i: Int) = File(dir(ctx, pid), "h_$i.wav")
+    fun pageResultFile(ctx: Context, pid: String, i: Int) = File(File(dir(ctx, pid), "pages").apply { mkdirs() }, "$i.json")
 
     fun create(ctx: Context, displayName: String): Paper {
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())

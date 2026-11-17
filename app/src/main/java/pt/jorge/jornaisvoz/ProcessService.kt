@@ -17,14 +17,15 @@ import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -36,7 +37,7 @@ import java.util.concurrent.atomic.AtomicInteger
 class ProcessService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val queue = Channel<Pair<String, Boolean>>(Channel.UNLIMITED)
+    private val queue = Channel<Pair<String, Int>>(Channel.UNLIMITED)
     private val pendingCount = AtomicInteger(0)
     @Volatile private var lastStartId = 0
     private lateinit var tts: TtsSynth
@@ -48,10 +49,10 @@ class ProcessService : Service() {
         Notif.ensureChannels(this)
         tts = TtsSynth(this)
         scope.launch {
-            for ((pid, audioOnly) in queue) {
+            for ((pid, mode) in queue) {
                 active.add(pid)
                 try {
-                    if (audioOnly) regenerateAudio(pid) else process(pid)
+                    if (mode == MODE_AUDIO) regenerateAudio(pid) else process(pid, resume = mode == MODE_RESUME)
                 } catch (e: Exception) {
                     Repo.load(this@ProcessService, pid)?.let {
                         it.status = Paper.STATUS_ERROR
@@ -60,6 +61,7 @@ class ProcessService : Service() {
                     }
                 }
                 active.remove(pid)
+                stopRequests.remove(pid)
                 if (pendingCount.decrementAndGet() <= 0) {
                     ServiceCompat.stopForeground(this@ProcessService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                     stopSelf(lastStartId)
@@ -75,7 +77,7 @@ class ProcessService : Service() {
         val pid = intent?.getStringExtra(EXTRA_PID)
         if (pid != null) {
             pendingCount.incrementAndGet()
-            queue.trySend(pid to intent!!.getBooleanExtra(EXTRA_AUDIO_ONLY, false))
+            queue.trySend(pid to intent!!.getIntExtra(EXTRA_MODE, MODE_FULL))
         } else if (pendingCount.get() <= 0) {
             stopSelf(startId)
         }
@@ -96,7 +98,7 @@ class ProcessService : Service() {
         Notif.show(this, Notif.PROGRESS_ID, Notif.progress(this, "${p.name}: $msg", p.progress, p.total))
     }
 
-    private suspend fun process(pid: String) {
+    private suspend fun process(pid: String, resume: Boolean) {
         val ctx = this
         val p = Repo.load(ctx, pid) ?: return
         val prefs = Prefs(ctx)
@@ -110,8 +112,8 @@ class ProcessService : Service() {
         }
         p.name = Repo.nameFromFile(p.name + ".pdf")
         p.status = Paper.STATUS_PROCESSING
-        p.articles.clear()
         p.progress = 0
+        if (!resume) File(Repo.dir(ctx, pid), "pages").deleteRecursively()
         update(p, "A abrir o PDF…")
 
         val src = Repo.sourcePdf(ctx, pid)
@@ -119,15 +121,17 @@ class ProcessService : Service() {
         client.onStatus = { msg -> update(p, msg) }
         client.pickFallback()
 
-        // 1) Prepara as imagens das páginas (rápido) e guarda-as em ficheiros temporários.
+        // 1) Prepara as imagens das páginas que faltam ler.
         val pagesDir = File(cacheDir, "pages_$pid").apply { deleteRecursively(); mkdirs() }
         val pfd = ParcelFileDescriptor.open(src, ParcelFileDescriptor.MODE_READ_ONLY)
         val renderer = PdfRenderer(pfd)
         val n = renderer.pageCount
         p.total = n
+        val todo = (0 until n).filter { !Repo.pageResultFile(ctx, pid, it).exists() }
         try {
-            for (i in 0 until n) {
-                update(p, "A preparar página ${i + 1} de $n")
+            for ((k, i) in todo.withIndex()) {
+                if (pid in stopRequests) break
+                update(p, "A preparar página ${k + 1} de ${todo.size}")
                 File(pagesDir, "$i.jpg").writeBytes(renderPage(renderer, i))
             }
         } finally {
@@ -135,47 +139,71 @@ class ProcessService : Service() {
             pfd.close()
         }
 
-        // 2) Envia ao Gemini 3 páginas de cada vez.
-        val results = arrayOfNulls<PageResult>(n)
-        val done = AtomicInteger(0)
-        var failedPages = 0
+        // 2) Envia ao Gemini 3 páginas de cada vez, pela ordem das páginas.
+        val already = n - todo.size
+        val done = AtomicInteger(already)
+        val failed = AtomicInteger(0)
+        var fatal: FatalError? = null
         val sem = Semaphore(PARALLEL)
         val pace = Mutex()
         var lastRequest = 0L
-        update(p, "A ler páginas com o Gemini (0 de $n)")
-        coroutineScope {
-            for (i in 0 until n) {
-                launch(Dispatchers.IO) {
-                    sem.withPermit {
-                        pace.withLock {
-                            val wait = 2500 - (System.currentTimeMillis() - lastRequest)
-                            if (wait > 0) delay(wait)
-                            lastRequest = System.currentTimeMillis()
-                        }
-                        val jpeg = File(pagesDir, "$i.jpg").readBytes()
-                        results[i] = try {
-                            client.analyzePage(jpeg, i + 1, n)
-                        } catch (e: FatalError) {
-                            throw e
-                        } catch (e: Exception) {
-                            synchronized(results) { failedPages++ }
-                            null
-                        }
-                        val d = done.incrementAndGet()
-                        p.progress = d
-                        update(p, "A ler páginas com o Gemini ($d de $n)")
+        p.progress = already
+        update(p, "A ler páginas com o Gemini ($already de $n)")
+        val workers = SupervisorJob()
+        val wscope = CoroutineScope(Dispatchers.IO + workers)
+        for (i in todo) {
+            wscope.launch {
+                sem.withPermit {
+                    if (pid in stopRequests) return@withPermit
+                    val img = File(pagesDir, "$i.jpg")
+                    if (!img.exists()) return@withPermit
+                    pace.withLock {
+                        val wait = 2500 - (System.currentTimeMillis() - lastRequest)
+                        if (wait > 0) delay(wait)
+                        lastRequest = System.currentTimeMillis()
                     }
+                    try {
+                        val res = runInterruptible { client.analyzePage(img.readBytes(), i + 1, n) }
+                        Repo.pageResultFile(ctx, pid, i).writeText(res.raw)
+                    } catch (e: FatalError) {
+                        fatal = e
+                        workers.cancel()
+                        return@withPermit
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        failed.incrementAndGet()
+                    }
+                    val d = done.incrementAndGet()
+                    p.progress = d
+                    update(p, "A ler páginas com o Gemini ($d de $n)")
                 }
             }
         }
+        // Espera que acabem, ou que o utilizador carregue em "Parar e ouvir".
+        while (workers.children.any { it.isActive }) {
+            if (pid in stopRequests) {
+                workers.cancel()
+                break
+            }
+            delay(500)
+        }
         pagesDir.deleteRecursively()
+        val stopped = pid in stopRequests
+        fatal?.let { if (!stopped) throw it }
 
-        // 3) Junta as notícias pela ordem das páginas.
+        // 3) Junta as notícias das páginas lidas, pela ordem das páginas.
         val merged = mutableListOf<Article>()
         var pendingContinuation: Article? = null
+        var pagesRead = 0
         for (i in 0 until n) {
-            val res = results[i] ?: continue
-            if (p.name.isBlank() && res.paperName.isNotBlank()) p.name = res.paperName
+            val f = Repo.pageResultFile(ctx, pid, i)
+            val res = if (f.exists()) runCatching { GeminiClient.parseResult(f.readText()) }.getOrNull() else null
+            if (res == null) {
+                pendingContinuation = null
+                continue
+            }
+            pagesRead++
             for (a in res.articles) {
                 if (a.type == "chamada") continue
                 if (a.continuesPrevious && merged.isNotEmpty() && (a.title.isBlank() || pendingContinuation != null)) {
@@ -191,21 +219,25 @@ class ProcessService : Service() {
                 pendingContinuation = if (a.continuesNext) art else null
             }
         }
+        p.pagesRead = pagesRead
 
         if (merged.isEmpty()) {
             p.status = Paper.STATUS_ERROR
-            p.message = "Não foi possível encontrar notícias neste PDF."
+            p.message = if (stopped) "Parado antes de ler alguma notícia. Carregue em Continuar."
+            else "Não foi possível encontrar notícias neste PDF."
             Repo.save(ctx, p)
-            Notif.done(ctx, p)
+            if (!stopped) Notif.done(ctx, p)
             return
         }
         p.articles = merged
         p.progress = p.total
         buildHeadlines(p, prefs)
         p.status = Paper.STATUS_READY
-        p.message = "${merged.size} notícias" + if (failedPages > 0) " ($failedPages páginas não lidas)" else ""
+        p.message = if (pagesRead < n)
+            "${merged.size} notícias ($pagesRead de $n páginas lidas). Pode carregar em Continuar."
+        else "${merged.size} notícias"
         Repo.save(ctx, p)
-        if (failedPages == 0) src.delete() // poupa espaço: o PDF já não é preciso
+        if (pagesRead == n) src.delete() // poupa espaço: o PDF já não é preciso
         Notif.done(ctx, p)
     }
 
@@ -254,13 +286,23 @@ class ProcessService : Service() {
         /** Jornais a ser processados neste momento. */
         val active: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
         const val EXTRA_PID = "pid"
-        const val EXTRA_AUDIO_ONLY = "audioOnly"
+        const val EXTRA_MODE = "mode"
+        const val MODE_FULL = 0
+        const val MODE_RESUME = 1
+        const val MODE_AUDIO = 2
 
-        fun start(ctx: Context, pid: String, audioOnly: Boolean = false) {
+        /** Pedidos de "Parar e ouvir". */
+        val stopRequests: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+        fun start(ctx: Context, pid: String, mode: Int = MODE_FULL) {
             val i = Intent(ctx, ProcessService::class.java)
                 .putExtra(EXTRA_PID, pid)
-                .putExtra(EXTRA_AUDIO_ONLY, audioOnly)
+                .putExtra(EXTRA_MODE, mode)
             ContextCompat.startForegroundService(ctx, i)
+        }
+
+        fun requestStop(pid: String) {
+            stopRequests.add(pid)
         }
     }
 }
