@@ -1,0 +1,165 @@
+package pt.jorge.jornaisvoz
+
+import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+class Article(
+    val page: Int,
+    val section: String,
+    val title: String,
+    val lead: String,
+    var text: String,
+)
+
+class Paper(
+    val id: String,
+    var name: String,
+    val created: Long,
+) {
+    var status: String = STATUS_NEW
+    var message: String = ""
+    var progress: Int = 0
+    var total: Int = 0
+    var articles: MutableList<Article> = mutableListOf()
+
+    val isReady get() = status == STATUS_READY
+
+    val dateLabel: String
+        get() = SimpleDateFormat("dd/MM HH:mm", Locale.forLanguageTag("pt-PT")).format(Date(created))
+
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("id", id); put("name", name); put("created", created)
+        put("status", status); put("message", message)
+        put("progress", progress); put("total", total)
+        put("articles", JSONArray().apply {
+            articles.forEach { a ->
+                put(JSONObject().apply {
+                    put("page", a.page); put("section", a.section); put("title", a.title)
+                    put("lead", a.lead); put("text", a.text)
+                })
+            }
+        })
+    }
+
+    companion object {
+        const val STATUS_NEW = "new"
+        const val STATUS_PROCESSING = "processing"
+        const val STATUS_READY = "ready"
+        const val STATUS_ERROR = "error"
+
+        fun fromJson(o: JSONObject): Paper {
+            val p = Paper(o.getString("id"), o.optString("name"), o.optLong("created"))
+            p.status = o.optString("status", STATUS_NEW)
+            p.message = o.optString("message")
+            p.progress = o.optInt("progress")
+            p.total = o.optInt("total")
+            val arr = o.optJSONArray("articles") ?: JSONArray()
+            for (i in 0 until arr.length()) {
+                val a = arr.getJSONObject(i)
+                p.articles.add(
+                    Article(
+                        a.optInt("page"), a.optString("section"), a.optString("title"),
+                        a.optString("lead"), a.optString("text")
+                    )
+                )
+            }
+            return p
+        }
+    }
+}
+
+object Repo {
+    private val lock = Any()
+
+    fun root(ctx: Context) = File(ctx.filesDir, "papers").apply { mkdirs() }
+    fun dir(ctx: Context, pid: String) = File(root(ctx), pid)
+    fun sourcePdf(ctx: Context, pid: String) = File(dir(ctx, pid), "source.pdf")
+    fun headlineFile(ctx: Context, pid: String, i: Int) = File(dir(ctx, pid), "h_$i.wav")
+
+    fun create(ctx: Context, displayName: String): Paper {
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        val pid = "$stamp-${(1000..9999).random()}"
+        val p = Paper(pid, nameFromFile(displayName), System.currentTimeMillis())
+        dir(ctx, pid).mkdirs()
+        save(ctx, p)
+        return p
+    }
+
+    fun save(ctx: Context, p: Paper) = synchronized(lock) {
+        val d = dir(ctx, p.id).apply { mkdirs() }
+        val tmp = File(d, "paper.json.tmp")
+        tmp.writeText(p.toJson().toString())
+        tmp.renameTo(File(d, "paper.json"))
+    }
+
+    fun load(ctx: Context, pid: String): Paper? = synchronized(lock) {
+        val f = File(dir(ctx, pid), "paper.json")
+        if (!f.exists()) return null
+        try {
+            Paper.fromJson(JSONObject(f.readText()))
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun list(ctx: Context): List<Paper> =
+        (root(ctx).listFiles() ?: emptyArray())
+            .filter { it.isDirectory }
+            .mapNotNull { load(ctx, it.name) }
+            .sortedByDescending { it.created }
+
+    fun delete(ctx: Context, pid: String) = synchronized(lock) {
+        dir(ctx, pid).deleteRecursively()
+    }
+
+    fun cleanup(ctx: Context, keepDays: Int) {
+        val limit = System.currentTimeMillis() - keepDays * 24L * 3600 * 1000
+        list(ctx).filter { it.created < limit && it.status != Paper.STATUS_PROCESSING }
+            .forEach { delete(ctx, it.id) }
+    }
+
+    /** "_20261117-PT__Público_LX_261117_101020.pdf" -> "Público" */
+    fun nameFromFile(name: String): String {
+        val base = name.substringBeforeLast('.')
+        Regex("__([^_]+)").find(base)?.let { return it.groupValues[1].trim() }
+        val clean = base.replace('_', ' ').replace('-', ' ').trim()
+        return clean.ifBlank { "Jornal" }
+    }
+}
+
+class Prefs(ctx: Context) {
+    private val sp = ctx.getSharedPreferences("prefs", Context.MODE_PRIVATE)
+
+    var apiKey: String
+        get() = sp.getString("apiKey", "") ?: ""
+        set(v) = sp.edit().putString("apiKey", v.trim()).apply()
+
+    var model: String
+        get() = sp.getString("model", DEFAULT_MODEL) ?: DEFAULT_MODEL
+        set(v) = sp.edit().putString("model", v.trim().ifBlank { DEFAULT_MODEL }).apply()
+
+    var pauseSeconds: Int
+        get() = sp.getInt("pause", 3)
+        set(v) = sp.edit().putInt("pause", v.coerceIn(1, 10)).apply()
+
+    var speechRate: Float
+        get() = sp.getFloat("rate", 1.0f)
+        set(v) = sp.edit().putFloat("rate", v.coerceIn(0.5f, 2.0f)).apply()
+
+    var readLead: Boolean
+        get() = sp.getBoolean("readLead", true)
+        set(v) = sp.edit().putBoolean("readLead", v).apply()
+
+    var keepDays: Int
+        get() = sp.getInt("keepDays", 3)
+        set(v) = sp.edit().putInt("keepDays", v.coerceIn(1, 30)).apply()
+
+    companion object {
+        const val DEFAULT_MODEL = "gemini-3.5-flash-lite"
+    }
+}
