@@ -267,8 +267,13 @@ class ProcessService : Service() {
         client.onStatus = { msg -> update(p, msg) }
         client.pickFallback()
         val wa = client.extractArticle(page.text, page.url)
+        if (wa.paid) {
+            val what = listOf(wa.site, wa.title).filter { it.isNotBlank() }.joinToString(": ")
+            linkFailed(what.ifBlank { "conteúdo para assinantes" }, title = "Notícia paga", prefix = "Notícia paga, não foi guardada")
+            return
+        }
         if (wa.text.length < 150) {
-            linkFailed("Não encontrei o texto da notícia (pode ser conteúdo só para assinantes).")
+            linkFailed("Não encontrei o texto da notícia nesta página.")
             return
         }
         val fresh = Repo.shared(ctx)
@@ -284,12 +289,19 @@ class ProcessService : Service() {
         Notif.show(ctx, title.hashCode(), Notif.simple(ctx, "Notícia pronta a ouvir", title))
     }
 
-    private fun linkFailed(msg: String) {
+    private fun linkFailed(
+        msg: String,
+        title: String = "Não foi possível ler a notícia",
+        prefix: String = "Última notícia não lida",
+    ) {
         val p = Repo.shared(this)
         p.status = if (p.articles.isEmpty()) Paper.STATUS_ERROR else Paper.STATUS_READY
-        p.message = "Última notícia não lida: $msg"
+        p.message = "$prefix: $msg"
         Repo.save(this, p)
-        Notif.show(this, 4242, Notif.simple(this, "Não foi possível ler a notícia", msg))
+        Notif.show(this, 4242, Notif.simple(this, title, msg))
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            android.widget.Toast.makeText(this, "$title: $msg", android.widget.Toast.LENGTH_LONG).show()
+        }
     }
 
     private suspend fun regenerateAudio(pid: String) {

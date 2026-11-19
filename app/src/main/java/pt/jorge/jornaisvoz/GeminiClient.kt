@@ -17,7 +17,7 @@ class PageArticle(
     val continuesNext: Boolean,
 )
 
-class WebArticle(val site: String, val title: String, val lead: String, val text: String)
+class WebArticle(val site: String, val title: String, val lead: String, val text: String, val paid: Boolean)
 
 class PageResult(val paperName: String, val articles: List<PageArticle>, val raw: String = "")
 
@@ -134,8 +134,9 @@ class GeminiClient(private val apiKey: String, private val model: String) {
 Abaixo está o texto de uma página web ($url), copiado do navegador.
 Extrai a notícia principal da página. Transcreve o texto INTEGRAL da notícia, sem resumir.
 Ignora menus, avisos de cookies, publicidade, botões de partilha, legendas, comentários, listas de outras notícias e rodapés.
-Devolve JSON: {"jornal":"nome do jornal ou site","titulo":"","entrada":"subtítulo/lead, se existir","texto":"corpo integral"}.
-Se a página não tiver uma notícia legível (erro, página de assinatura, só o início por ser conteúdo pago), põe em "texto" o que existir da notícia, ou "" se não houver nada.
+Devolve JSON: {"jornal":"nome do jornal ou site","titulo":"","entrada":"subtítulo/lead, se existir","texto":"corpo integral","paga":false}.
+"paga" deve ser true se a notícia for conteúdo pago ou exclusivo para assinantes: por exemplo, se a página pede para assinar, iniciar sessão ou pagar para continuar a ler, se mostra "exclusivo assinantes", "conteúdo premium", "assine para ler", ou se o texto aparece cortado depois dos primeiros parágrafos. Caso contrário, false.
+Se a página não tiver uma notícia legível, põe "texto" vazio.
 
 TEXTO DA PÁGINA:
 ${pageText.take(60_000)}
@@ -147,8 +148,9 @@ ${pageText.take(60_000)}
                 put("titulo", JSONObject().put("type", "STRING"))
                 put("entrada", JSONObject().put("type", "STRING"))
                 put("texto", JSONObject().put("type", "STRING"))
+                put("paga", JSONObject().put("type", "BOOLEAN"))
             })
-            put("required", JSONArray(listOf("titulo", "texto")))
+            put("required", JSONArray(listOf("titulo", "texto", "paga")))
         }
         val parts = JSONArray().put(JSONObject().put("text", prompt))
         val raw = try {
@@ -164,7 +166,8 @@ ${pageText.take(60_000)}
         val o = JSONObject(t.substring(t.indexOf('{'), t.lastIndexOf('}') + 1))
         return WebArticle(
             o.optString("jornal").trim(), o.optString("titulo").trim(),
-            o.optString("entrada").trim(), o.optString("texto").trim()
+            o.optString("entrada").trim(), o.optString("texto").trim(),
+            o.optBoolean("paga", false)
         )
     }
 
