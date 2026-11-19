@@ -77,6 +77,13 @@ class Paper(
 
 object Repo {
     private val lock = Any()
+    const val SHARED_ID = "partilhadas"
+
+    /** Coleção das notícias partilhadas a partir de links (Google Notícias, sites). */
+    fun shared(ctx: Context): Paper = load(ctx, SHARED_ID) ?: Paper(SHARED_ID, "Notícias partilhadas", System.currentTimeMillis()).also {
+        it.status = Paper.STATUS_READY
+        save(ctx, it)
+    }
 
     fun root(ctx: Context) = File(ctx.filesDir, "papers").apply { mkdirs() }
     fun dir(ctx: Context, pid: String) = File(root(ctx), pid)
@@ -114,7 +121,7 @@ object Repo {
         (root(ctx).listFiles() ?: emptyArray())
             .filter { it.isDirectory }
             .mapNotNull { load(ctx, it.name) }
-            .sortedByDescending { it.created }
+            .sortedWith(compareByDescending<Paper> { it.id == SHARED_ID }.thenByDescending { it.created })
 
     fun delete(ctx: Context, pid: String) = synchronized(lock) {
         dir(ctx, pid).deleteRecursively()
@@ -122,7 +129,7 @@ object Repo {
 
     fun cleanup(ctx: Context, keepDays: Int) {
         val limit = System.currentTimeMillis() - keepDays * 24L * 3600 * 1000
-        list(ctx).filter { it.created < limit && it.status != Paper.STATUS_PROCESSING }
+        list(ctx).filter { it.id != SHARED_ID && it.created < limit && it.status != Paper.STATUS_PROCESSING }
             .forEach { delete(ctx, it.id) }
     }
 

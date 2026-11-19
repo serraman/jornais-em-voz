@@ -37,7 +37,8 @@ import java.util.concurrent.atomic.AtomicInteger
 class ProcessService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val queue = Channel<Pair<String, Int>>(Channel.UNLIMITED)
+    private data class Task(val pid: String, val mode: Int, val url: String?)
+    private val queue = Channel<Task>(Channel.UNLIMITED)
     private val pendingCount = AtomicInteger(0)
     @Volatile private var lastStartId = 0
     private lateinit var tts: TtsSynth
@@ -49,12 +50,18 @@ class ProcessService : Service() {
         Notif.ensureChannels(this)
         tts = TtsSynth(this)
         scope.launch {
-            for ((pid, mode) in queue) {
+            for ((pid, mode, url) in queue) {
                 active.add(pid)
                 try {
-                    if (mode == MODE_AUDIO) regenerateAudio(pid) else process(pid, resume = mode == MODE_RESUME)
+                    when (mode) {
+                        MODE_AUDIO -> regenerateAudio(pid)
+                        MODE_LINK -> processLink(url ?: "")
+                        else -> process(pid, resume = mode == MODE_RESUME)
+                    }
                 } catch (e: Exception) {
-                    Repo.load(this@ProcessService, pid)?.let {
+                    if (mode == MODE_LINK) {
+                        linkFailed(e.message ?: e.toString())
+                    } else Repo.load(this@ProcessService, pid)?.let {
                         it.status = Paper.STATUS_ERROR
                         it.message = e.message ?: e.toString()
                         Repo.save(this@ProcessService, it)
@@ -77,7 +84,7 @@ class ProcessService : Service() {
         val pid = intent?.getStringExtra(EXTRA_PID)
         if (pid != null) {
             pendingCount.incrementAndGet()
-            queue.trySend(pid to intent!!.getIntExtra(EXTRA_MODE, MODE_FULL))
+            queue.trySend(Task(pid, intent!!.getIntExtra(EXTRA_MODE, MODE_FULL), intent.getStringExtra(EXTRA_URL)))
         } else if (pendingCount.get() <= 0) {
             stopSelf(startId)
         }
@@ -241,6 +248,50 @@ class ProcessService : Service() {
         Notif.done(ctx, p)
     }
 
+    private suspend fun processLink(url: String) {
+        val ctx = this
+        val prefs = Prefs(ctx)
+        val p = Repo.shared(ctx)
+        if (prefs.apiKey.isBlank()) {
+            linkFailed("Falta a chave da API Gemini. Abra a app > Definições.")
+            return
+        }
+        update(p, "A abrir a notícia…")
+        val page = PageFetcher.fetch(ctx, url) { msg -> update(p, msg) }
+        if (page.text.length < 300) {
+            linkFailed("A página não tinha texto suficiente.")
+            return
+        }
+        update(p, "A extrair a notícia com o Gemini…")
+        val client = GeminiClient(prefs.apiKey, prefs.model)
+        client.onStatus = { msg -> update(p, msg) }
+        client.pickFallback()
+        val wa = client.extractArticle(page.text, page.url)
+        if (wa.text.length < 150) {
+            linkFailed("Não encontrei o texto da notícia (pode ser conteúdo só para assinantes).")
+            return
+        }
+        val fresh = Repo.shared(ctx)
+        val title = wa.title.ifBlank { wa.text.split(' ').take(10).joinToString(" ") + "…" }
+        fresh.articles.removeAll { it.title == title }
+        fresh.articles.add(0, Article(0, wa.site, title, wa.lead, wa.text))
+        while (fresh.articles.size > MAX_SHARED) fresh.articles.removeAt(fresh.articles.size - 1)
+        fresh.status = Paper.STATUS_PROCESSING
+        buildHeadlines(fresh, prefs)
+        fresh.status = Paper.STATUS_READY
+        fresh.message = "${fresh.articles.size} notícias · última: $title"
+        Repo.save(ctx, fresh)
+        Notif.show(ctx, title.hashCode(), Notif.simple(ctx, "Notícia pronta a ouvir", title))
+    }
+
+    private fun linkFailed(msg: String) {
+        val p = Repo.shared(this)
+        p.status = if (p.articles.isEmpty()) Paper.STATUS_ERROR else Paper.STATUS_READY
+        p.message = "Última notícia não lida: $msg"
+        Repo.save(this, p)
+        Notif.show(this, 4242, Notif.simple(this, "Não foi possível ler a notícia", msg))
+    }
+
     private suspend fun regenerateAudio(pid: String) {
         val p = Repo.load(this, pid) ?: return
         if (p.articles.isEmpty()) return
@@ -290,6 +341,9 @@ class ProcessService : Service() {
         const val MODE_FULL = 0
         const val MODE_RESUME = 1
         const val MODE_AUDIO = 2
+        const val MODE_LINK = 3
+        const val EXTRA_URL = "url"
+        const val MAX_SHARED = 30
 
         /** Pedidos de "Parar e ouvir". */
         val stopRequests: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
@@ -298,6 +352,14 @@ class ProcessService : Service() {
             val i = Intent(ctx, ProcessService::class.java)
                 .putExtra(EXTRA_PID, pid)
                 .putExtra(EXTRA_MODE, mode)
+            ContextCompat.startForegroundService(ctx, i)
+        }
+
+        fun startLink(ctx: Context, url: String) {
+            val i = Intent(ctx, ProcessService::class.java)
+                .putExtra(EXTRA_PID, Repo.SHARED_ID)
+                .putExtra(EXTRA_MODE, MODE_LINK)
+                .putExtra(EXTRA_URL, url)
             ContextCompat.startForegroundService(ctx, i)
         }
 
@@ -345,6 +407,15 @@ object Notif {
             .build()
         show(ctx, p.id.hashCode(), n)
     }
+
+    fun simple(ctx: Context, title: String, text: String): Notification =
+        NotificationCompat.Builder(ctx, CH_DONE)
+            .setSmallIcon(R.drawable.ic_notif)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setAutoCancel(true)
+            .setContentIntent(openApp(ctx))
+            .build()
 
     fun show(ctx: Context, id: Int, n: Notification) {
         try {

@@ -13,6 +13,18 @@ class ShareActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Link partilhado (Google Notícias, site de um jornal…)
+        val sharedText = intent?.getStringExtra(Intent.EXTRA_TEXT)
+        if (intent?.action == Intent.ACTION_SEND && intent.type?.startsWith("text/") == true && sharedText != null) {
+            val url = Regex("https?://\\S+").find(sharedText)?.value?.trimEnd('.', ',', ')', '"', '»')
+            if (url == null) {
+                Toast.makeText(this, "Não encontrei nenhum link no texto partilhado", Toast.LENGTH_LONG).show()
+            } else {
+                ProcessService.startLink(this, url)
+                Toast.makeText(this, "A preparar a notícia. Fica em \"Notícias partilhadas\".", Toast.LENGTH_LONG).show()
+            }
+            finish(); return
+        }
         val uris = mutableListOf<Uri>()
         when (intent?.action) {
             Intent.ACTION_SEND ->

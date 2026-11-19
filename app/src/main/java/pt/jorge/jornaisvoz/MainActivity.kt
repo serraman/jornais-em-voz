@@ -55,7 +55,7 @@ class MainActivity : Activity() {
             button("Ajuda") { showHelp() }
         ))
         root.addView(TextView(this).apply {
-            text = "Para juntar um jornal: no WhatsApp, abra o PDF (ou mantenha o dedo em cima dele) > Partilhar > Jornais em Voz."
+            text = "Para juntar um jornal: no WhatsApp, abra o PDF (ou mantenha o dedo em cima dele) > Partilhar > Jornais em Voz.\nPara uma notícia avulsa: no Google Notícias (ou no site do jornal) > Partilhar > Jornais em Voz."
             setPadding(0, dp(8), 0, dp(8))
         })
 
@@ -193,7 +193,7 @@ class MainActivity : Activity() {
     }
 
     private fun showTitles(p: Paper) {
-        val items = p.articles.mapIndexed { i, a -> "${i + 1}. ${a.title}  (pág. ${a.page})" }.toTypedArray()
+        val items = p.articles.mapIndexed { i, a -> "${i + 1}. ${a.title}" + if (a.page > 0) "  (pág. ${a.page})" else if (a.section.isNotBlank()) "  (${a.section})" else "" }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle(p.name)
             .setItems(items) { _, which ->

@@ -17,6 +17,8 @@ class PageArticle(
     val continuesNext: Boolean,
 )
 
+class WebArticle(val site: String, val title: String, val lead: String, val text: String)
+
 class PageResult(val paperName: String, val articles: List<PageArticle>, val raw: String = "")
 
 /** Erro que não vale a pena repetir (chave inválida, modelo inexistente, limite diário). */
@@ -91,34 +93,79 @@ class GeminiClient(private val apiKey: String, private val model: String) {
     }
 
     private fun generate(b64: String, page: Int, total: Int, withSchema: Boolean): String {
+        val parts = JSONArray()
+            .put(JSONObject().put("inline_data", JSONObject().apply {
+                put("mime_type", "image/jpeg"); put("data", b64)
+            }))
+            .put(JSONObject().put("text", prompt(page, total)))
+        return generateParts(parts, if (withSchema) schema() else null, page)
+    }
+
+    private fun generateParts(parts: JSONArray, schema: JSONObject?, page: Int): String {
         val genConfig = JSONObject().apply {
             put("responseMimeType", "application/json")
             put("maxOutputTokens", 32768)
-            if (withSchema) put("responseSchema", schema())
+            if (schema != null) put("responseSchema", schema)
             if (useThinkingLevel) put("thinkingConfig", JSONObject().put("thinkingLevel", "low"))
         }
         val body = JSONObject().apply {
             put("contents", JSONArray().put(JSONObject().apply {
                 put("role", "user")
-                put("parts", JSONArray()
-                    .put(JSONObject().put("inline_data", JSONObject().apply {
-                        put("mime_type", "image/jpeg"); put("data", b64)
-                    }))
-                    .put(JSONObject().put("text", prompt(page, total))))
+                put("parts", parts)
             }))
             put("generationConfig", genConfig)
         }
         val resp = postWithRetry(body.toString(), page)
         val cand = resp.optJSONArray("candidates")?.optJSONObject(0)
             ?: throw IOException("Resposta vazia do Gemini")
-        val parts = cand.optJSONObject("content")?.optJSONArray("parts") ?: JSONArray()
+        val out = cand.optJSONObject("content")?.optJSONArray("parts") ?: JSONArray()
         val sb = StringBuilder()
-        for (i in 0 until parts.length()) {
-            val p = parts.getJSONObject(i)
+        for (i in 0 until out.length()) {
+            val p = out.getJSONObject(i)
             if (p.optBoolean("thought", false)) continue
             sb.append(p.optString("text"))
         }
         return sb.toString()
+    }
+
+    /** Tira a notícia principal do texto de uma página web. */
+    fun extractArticle(pageText: String, url: String): WebArticle {
+        val prompt = """
+Abaixo está o texto de uma página web ($url), copiado do navegador.
+Extrai a notícia principal da página. Transcreve o texto INTEGRAL da notícia, sem resumir.
+Ignora menus, avisos de cookies, publicidade, botões de partilha, legendas, comentários, listas de outras notícias e rodapés.
+Devolve JSON: {"jornal":"nome do jornal ou site","titulo":"","entrada":"subtítulo/lead, se existir","texto":"corpo integral"}.
+Se a página não tiver uma notícia legível (erro, página de assinatura, só o início por ser conteúdo pago), põe em "texto" o que existir da notícia, ou "" se não houver nada.
+
+TEXTO DA PÁGINA:
+${pageText.take(60_000)}
+""".trimIndent()
+        val schema = JSONObject().apply {
+            put("type", "OBJECT")
+            put("properties", JSONObject().apply {
+                put("jornal", JSONObject().put("type", "STRING"))
+                put("titulo", JSONObject().put("type", "STRING"))
+                put("entrada", JSONObject().put("type", "STRING"))
+                put("texto", JSONObject().put("type", "STRING"))
+            })
+            put("required", JSONArray(listOf("titulo", "texto")))
+        }
+        val parts = JSONArray().put(JSONObject().put("text", prompt))
+        val raw = try {
+            generateParts(parts, schema, 0)
+        } catch (e: BadRequest) {
+            if (useThinkingLevel && e.message.orEmpty().contains("think", true)) {
+                useThinkingLevel = false
+                generateParts(parts, schema, 0)
+            } else throw FatalError("O Gemini recusou o pedido: ${e.message}")
+        }
+        var t = raw.trim()
+        if (t.startsWith("```")) t = t.substringAfter('\n').substringBeforeLast("```").trim()
+        val o = JSONObject(t.substring(t.indexOf('{'), t.lastIndexOf('}') + 1))
+        return WebArticle(
+            o.optString("jornal").trim(), o.optString("titulo").trim(),
+            o.optString("entrada").trim(), o.optString("texto").trim()
+        )
     }
 
     private fun postWithRetry(body: String, page: Int): JSONObject {
@@ -144,14 +191,14 @@ class GeminiClient(private val apiKey: String, private val model: String) {
                         val secs = Regex("\"retryDelay\"\\s*:\\s*\"(\\d+)").find(text)
                             ?.groupValues?.get(1)?.toLongOrNull() ?: (30L * (attempt + 1))
                         lastError = "limite por minuto"
-                        onStatus?.invoke("pág. $page: limite por minuto do Gemini, a aguardar ${secs + 2} s")
+                        onStatus?.invoke("${if (page > 0) "pág. $page" else "notícia"}: limite por minuto do Gemini, a aguardar ${secs + 2} s")
                         Thread.sleep((secs + 2) * 1000)
                     }
                     code >= 500 -> {
                         busy++
                         lastError = "serviço do Gemini indisponível ($code)"
                         val next = if (busy >= 2 && fallbackModel != null && busy % 2 == 0) " com ${fallbackModel}" else ""
-                        onStatus?.invoke("pág. $page: Gemini ocupado ($code), nova tentativa$next")
+                        onStatus?.invoke("${if (page > 0) "pág. $page" else "notícia"}: Gemini ocupado ($code), nova tentativa$next")
                         Thread.sleep(if (next.isNotEmpty()) 2_000L else 8_000L * busy.coerceAtMost(4))
                     }
                     code == 400 -> {
@@ -164,11 +211,11 @@ class GeminiClient(private val apiKey: String, private val model: String) {
                 }
             } catch (e: java.net.SocketTimeoutException) {
                 lastError = "o Gemini não respondeu em 3 minutos"
-                onStatus?.invoke("pág. $page: o Gemini demorou demasiado, nova tentativa")
+                onStatus?.invoke("${if (page > 0) "pág. $page" else "notícia"}: o Gemini demorou demasiado, nova tentativa")
                 if (++timeouts >= 2) break
             } catch (e: IOException) {
                 lastError = e.message ?: "erro de rede"
-                onStatus?.invoke("pág. $page: erro de rede ($lastError), nova tentativa")
+                onStatus?.invoke("${if (page > 0) "pág. $page" else "notícia"}: erro de rede ($lastError), nova tentativa")
                 Thread.sleep(5_000L * (attempt + 1))
             } finally {
                 conn.disconnect()

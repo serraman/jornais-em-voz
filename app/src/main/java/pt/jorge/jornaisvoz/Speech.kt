@@ -79,6 +79,7 @@ object SpeechText {
         val a = paper.articles[i]
         val sb = StringBuilder()
         if (i == 0) sb.append("${paper.name}. ${paper.articles.size} notícias. ")
+        if (paper.id == Repo.SHARED_ID && a.section.isNotBlank()) sb.append(a.section).append(". ")
         sb.append(a.title.trim().trimEnd('.')).append(".")
         if (readLead && a.lead.isNotBlank() && a.lead.length <= 350) sb.append(" ").append(a.lead.trim())
         return sb.toString()
