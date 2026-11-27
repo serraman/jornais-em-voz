@@ -38,3 +38,15 @@ No fim da notícia completa, a leitura continua no título seguinte.
 ## Atualizar a app
 
 Cada alteração ao código neste repositório gera automaticamente uma nova versão em *Releases*. Basta descarregar e instalar por cima da anterior. Os jornais e as definições mantêm-se.
+
+## Programa do PC (opcional)
+
+Para ler os jornais no PC em vez do telemóvel:
+
+1. Descarregue `JornaisEmVozPC.exe` da versão "Jornais em Voz PC" mais recente em *Releases* e abra-o. O Windows pode mostrar "O Windows protegeu o seu PC": carregue em **Mais informações > Executar mesmo assim**.
+2. Na primeira vez, carregue em **Definições** e cole a chave do Gemini.
+3. Descarregue os PDFs no WhatsApp do PC, carregue em **Escolher jornais (PDF)…** e escolha-os.
+4. Quando estiverem prontos, os ficheiros `.jornal.json` ficam em Transferências\Jornais em Voz. Envie-os para si próprio no WhatsApp.
+5. No telemóvel, toque no ficheiro no WhatsApp (ou Partilhar) e escolha **Jornais em Voz**. A app prepara o áudio em 1 a 2 minutos.
+
+Se carregar em **Parar e guardar o que já leu**, o ficheiro fica só com as páginas lidas. Se escolher outra vez o mesmo PDF, o programa lê só as páginas que faltam.

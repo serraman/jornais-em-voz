@@ -100,6 +100,31 @@ object Repo {
         return p
     }
 
+    /** Importa um ficheiro ".jornal.json" criado pelo programa do PC. */
+    fun importPackage(ctx: Context, json: String): Paper {
+        val o = JSONObject(json.trimStart('\uFEFF'))
+        require(o.optString("formato") == "jornais-em-voz") { "Ficheiro não reconhecido" }
+        val p = create(ctx, "Jornal.pdf")
+        p.name = o.optString("nome").ifBlank { "Jornal" }
+        val arr = o.optJSONArray("artigos") ?: JSONArray()
+        for (i in 0 until arr.length()) {
+            val a = arr.getJSONObject(i)
+            p.articles.add(
+                Article(
+                    a.optInt("page"), a.optString("section"), a.optString("title"),
+                    a.optString("lead"), a.optString("text")
+                )
+            )
+        }
+        require(p.articles.isNotEmpty()) { "O ficheiro não tem notícias" }
+        p.total = o.optInt("total_paginas")
+        p.pagesRead = o.optInt("paginas_lidas")
+        p.status = Paper.STATUS_PROCESSING
+        p.message = "Recebido do PC. A preparar o áudio…"
+        save(ctx, p)
+        return p
+    }
+
     fun save(ctx: Context, p: Paper) = synchronized(lock) {
         val d = dir(ctx, p.id).apply { mkdirs() }
         val tmp = File(d, "paper.json.tmp")

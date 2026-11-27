@@ -1,0 +1,47 @@
+name: Compilar programa do PC
+
+on:
+  push:
+    branches: [ main ]
+    paths: [ 'pc/**', '.github/workflows/pc.yml' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependências
+        run: pip install pymupdf pyinstaller
+
+      - name: Testar a janela
+        env:
+          JEV_SMOKE: '1'
+        run: python pc/jornais_pc.py
+
+      - name: Criar o .exe
+        run: pyinstaller --onefile --windowed --name "JornaisEmVozPC" pc/jornais_pc.py
+
+      - name: Testar o .exe
+        shell: pwsh
+        run: |
+          $env:JEV_SMOKE = "1"
+          $p = Start-Process -FilePath dist\JornaisEmVozPC.exe -PassThru
+          if (-not $p.WaitForExit(60000)) { $p.Kill(); throw "O programa não fechou" }
+          if ($p.ExitCode -ne 0) { throw "Saiu com código $($p.ExitCode)" }
+
+      - name: Publicar
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: pc-v${{ github.run_number }}
+          name: Jornais em Voz PC v${{ github.run_number }}
+          files: dist/JornaisEmVozPC.exe
+          make_latest: false

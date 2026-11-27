@@ -311,8 +311,10 @@ class ProcessService : Service() {
         p.status = Paper.STATUS_PROCESSING
         buildHeadlines(p, Prefs(this))
         p.status = if (prev == Paper.STATUS_ERROR) Paper.STATUS_ERROR else Paper.STATUS_READY
-        p.message = "${p.articles.size} notícias"
+        p.message = "${p.articles.size} notícias" +
+            if (p.total > 0 && p.pagesRead in 1 until p.total) " (${p.pagesRead} de ${p.total} páginas lidas)" else ""
         Repo.save(this, p)
+        if (prev == Paper.STATUS_PROCESSING) Notif.done(this, p) // jornal recebido do PC
     }
 
     private suspend fun buildHeadlines(p: Paper, prefs: Prefs) {

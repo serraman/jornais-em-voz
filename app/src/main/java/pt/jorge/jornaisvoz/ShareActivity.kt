@@ -15,7 +15,9 @@ class ShareActivity : Activity() {
         super.onCreate(savedInstanceState)
         // Link partilhado (Google Notícias, site de um jornal…)
         val sharedText = intent?.getStringExtra(Intent.EXTRA_TEXT)
-        if (intent?.action == Intent.ACTION_SEND && intent.type?.startsWith("text/") == true && sharedText != null) {
+        val hasStream = intent?.action == Intent.ACTION_SEND &&
+            IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java) != null
+        if (intent?.action == Intent.ACTION_SEND && !hasStream && intent.type?.startsWith("text/") == true && sharedText != null) {
             val url = Regex("https?://\\S+").find(sharedText)?.value?.trimEnd('.', ',', ')', '"', '»')
             if (url == null) {
                 Toast.makeText(this, "Não encontrei nenhum link no texto partilhado", Toast.LENGTH_LONG).show()
@@ -34,16 +36,27 @@ class ShareActivity : Activity() {
             Intent.ACTION_VIEW -> intent.data?.let { uris.add(it) }
         }
         if (uris.isEmpty()) {
-            Toast.makeText(this, "Nenhum PDF recebido", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Nenhum ficheiro recebido", Toast.LENGTH_LONG).show()
             finish(); return
         }
         Toast.makeText(this, "A receber ${uris.size} jornal(is)…", Toast.LENGTH_SHORT).show()
         Thread {
             val ids = mutableListOf<String>()
+            val imported = mutableListOf<String>()
             var failed = 0
             for (u in uris) {
                 try {
                     val name = displayName(u) ?: "Jornal.pdf"
+                    val head = ByteArray(16)
+                    val nHead = contentResolver.openInputStream(u)!!.use { it.read(head) }
+                    val start = String(head, 0, maxOf(0, nHead), Charsets.ISO_8859_1).trimStart('\uFEFF', ' ', '\n', '\r', '\t', 'ï', '»', '¿')
+                    if (start.startsWith("{")) {
+                        // Ficheiro ".jornal.json" preparado no PC.
+                        val json = contentResolver.openInputStream(u)!!.use { it.readBytes().toString(Charsets.UTF_8) }
+                        val p = Repo.importPackage(this, json)
+                        imported.add(p.id)
+                        continue
+                    }
                     val p = Repo.create(this, name)
                     contentResolver.openInputStream(u)!!.use { input ->
                         Repo.sourcePdf(this, p.id).outputStream().use { input.copyTo(it) }
@@ -57,8 +70,12 @@ class ShareActivity : Activity() {
             }
             runOnUiThread {
                 ids.forEach { ProcessService.start(this, it) }
-                val msg = if (failed == 0) "A preparar ${ids.size} jornal(is). Será avisado quando estiver pronto."
-                else "Não foi possível abrir $failed ficheiro(s)."
+                imported.forEach { ProcessService.start(this, it, ProcessService.MODE_AUDIO) }
+                val msg = when {
+                    failed > 0 -> "Não foi possível abrir $failed ficheiro(s)."
+                    imported.isNotEmpty() && ids.isEmpty() -> "Jornal recebido do PC. A preparar o áudio (1 a 2 minutos)."
+                    else -> "A preparar ${ids.size + imported.size} jornal(is). Será avisado quando estiver pronto."
+                }
                 Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                 finish()
             }
