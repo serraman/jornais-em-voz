@@ -172,6 +172,7 @@ class MainActivity : Activity() {
         }
         if (p.isReady) buttons += button("Ouvir") { play(p) }
         if (p.isReady) buttons += button("Títulos") { showTitles(p) }
+        if (p.isReady && p.id != Repo.SHARED_ID) buttons += button("Secções") { chooseSections(p) }
         if (!busy && Repo.sourcePdf(this, p.id).exists() && p.total > 0 && p.pagesRead < p.total) {
             buttons += button("Continuar") { ProcessService.start(this, p.id, ProcessService.MODE_RESUME) }
         }
@@ -205,6 +206,44 @@ class MainActivity : Activity() {
                     .show()
             }
             .setNegativeButton("Fechar", null)
+            .show()
+    }
+
+    private fun chooseSections(p: Paper) {
+        val prefs = Prefs(this)
+        // Secções pela ordem em que aparecem no jornal, com o número de notícias.
+        val order = LinkedHashMap<String, Pair<String, Int>>()
+        for (a in p.articles) {
+            val key = sectionKey(a.section)
+            val shown = a.section.trim().ifBlank { "(sem secção)" }
+            val cur = order[key]
+            order[key] = (cur?.first ?: shown) to ((cur?.second ?: 0) + 1)
+        }
+        val keys = order.keys.toList()
+        val labels = keys.map { k -> val (n, c) = order.getValue(k); "$n ($c)" }.toTypedArray()
+        val excluded = prefs.excludedSections.toMutableSet()
+        val checked = BooleanArray(keys.size) { keys[it] !in excluded }
+        AlertDialog.Builder(this)
+            .setTitle("Secções a ouvir")
+            .setMultiChoiceItems(labels, checked) { _, w, isChecked -> checked[w] = isChecked }
+            .setPositiveButton("Guardar") { _, _ ->
+                keys.forEachIndexed { i, k -> if (checked[i]) excluded.remove(k) else excluded.add(k) }
+                prefs.excludedSections = excluded
+                Repo.list(this).filter { it.isReady && it.id != Repo.SHARED_ID }
+                    .forEach { ProcessService.start(this, it.id, ProcessService.MODE_AUDIO) }
+                val n = prefs.includedIndices(p).size
+                android.widget.Toast.makeText(
+                    this, "Vai ouvir $n de ${p.articles.size} notícias. A refazer o áudio…",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+            .setNeutralButton("Todas") { _, _ ->
+                keys.forEach { excluded.remove(it) }
+                prefs.excludedSections = excluded
+                Repo.list(this).filter { it.isReady && it.id != Repo.SHARED_ID }
+                    .forEach { ProcessService.start(this, it.id, ProcessService.MODE_AUDIO) }
+            }
+            .setNegativeButton("Cancelar", null)
             .show()
     }
 

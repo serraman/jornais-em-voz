@@ -82,10 +82,10 @@ class TtsSynth(ctx: Context) : TextToSpeech.OnInitListener {
 }
 
 object SpeechText {
-    fun headline(paper: Paper, i: Int, readLead: Boolean): String {
+    fun headline(paper: Paper, i: Int, readLead: Boolean, intro: Boolean = i == 0, count: Int = paper.articles.size): String {
         val a = paper.articles[i]
         val sb = StringBuilder()
-        if (i == 0) sb.append("${paper.name}. ${paper.articles.size} notícias. ")
+        if (intro) sb.append("${paper.name}. $count notícias. ")
         if (paper.id == Repo.SHARED_ID && a.section.isNotBlank()) sb.append(a.section).append(". ")
         sb.append(a.title.trim().trimEnd('.')).append(".")
         if (readLead && a.lead.isNotBlank() && a.lead.length <= 350) sb.append(" ").append(a.lead.trim())

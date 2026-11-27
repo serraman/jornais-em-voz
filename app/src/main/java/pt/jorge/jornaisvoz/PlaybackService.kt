@@ -124,6 +124,18 @@ class PlaybackService : MediaLibraryService() {
         return -1
     }
 
+    /** Próximo título na lista (salta notícias completas e secções retiradas); -1 se não houver. */
+    private fun nextHeadline(from: Int): Int {
+        if (from < 0) return -1
+        for (j in from + 1 until exo.mediaItemCount) if (exo.getMediaItemAt(j).mediaId.startsWith("h:")) return j
+        return -1
+    }
+
+    private fun prevHeadline(from: Int): Int {
+        for (j in from - 1 downTo 0) if (exo.getMediaItemAt(j).mediaId.startsWith("h:")) return j
+        return -1
+    }
+
     private fun articleRange(pid: String, i: Int): IntRange? {
         val prefix = "a:$pid:$i:"
         var first = -1
@@ -209,7 +221,7 @@ class PlaybackService : MediaLibraryService() {
         val id = exo.currentMediaItem?.let { parseId(it.mediaId) } ?: return
         when (id.type) {
             'h' -> {
-                val nextH = indexOfId("h:${id.pid}:${id.i + 1}")
+                val nextH = nextHeadline(indexOfId("h:${id.pid}:${id.i}"))
                 if (nextH >= 0) exo.seekToDefaultPosition(nextH)
             }
             'a' -> skipArticle(id.pid, id.i)
@@ -220,7 +232,7 @@ class PlaybackService : MediaLibraryService() {
         val id = exo.currentMediaItem?.let { parseId(it.mediaId) }
         when (id?.type) {
             'h' -> {
-                val prev = indexOfId("h:${id.pid}:${id.i - 1}")
+                val prev = prevHeadline(indexOfId("h:${id.pid}:${id.i}"))
                 if (prev >= 0) exo.seekToDefaultPosition(prev) else exo.seekTo(0)
             }
             'a' -> {
@@ -276,7 +288,7 @@ class PlaybackService : MediaLibraryService() {
 
     private fun skipArticle(pid: String, i: Int) {
         articleJob?.cancel()
-        val nextH = indexOfId("h:$pid:${i + 1}")
+        val nextH = nextHeadline(indexOfId("h:$pid:$i"))
         if (nextH >= 0) exo.seekToDefaultPosition(nextH) else exo.pause()
         articleRange(pid, i)?.let { r ->
             if (nextH >= 0) exo.removeMediaItems(r.first, r.last + 1)

@@ -174,6 +174,9 @@ object Repo {
     }
 }
 
+/** Nome de secção normalizado para comparar ("ECONOMIA " e "Economia" são a mesma). */
+fun sectionKey(section: String): String = section.trim().lowercase().ifBlank { "(sem secção)" }
+
 class Prefs(ctx: Context) {
     private val sp = ctx.getSharedPreferences("prefs", Context.MODE_PRIVATE)
 
@@ -200,6 +203,18 @@ class Prefs(ctx: Context) {
     var keepDays: Int
         get() = sp.getInt("keepDays", 3)
         set(v) = sp.edit().putInt("keepDays", v.coerceIn(1, 30)).apply()
+
+    /** Secções que o utilizador não quer ouvir (nomes normalizados, ver [sectionKey]). */
+    var excludedSections: Set<String>
+        get() = sp.getStringSet("excludedSections", emptySet())?.toSet() ?: emptySet()
+        set(v) = sp.edit().putStringSet("excludedSections", v.toSet()).apply()
+
+    /** Índices das notícias a ouvir (secções não excluídas; a coleção partilhada ouve tudo). */
+    fun includedIndices(p: Paper): List<Int> {
+        if (p.id == Repo.SHARED_ID) return p.articles.indices.toList()
+        val ex = excludedSections
+        return p.articles.indices.filter { sectionKey(p.articles[it].section) !in ex }
+    }
 
     /** Motor de voz (pacote) escolhido; vazio = motor por omissão do telemóvel. */
     var ttsEngine: String
