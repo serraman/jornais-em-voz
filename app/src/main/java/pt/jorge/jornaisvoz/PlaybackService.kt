@@ -247,6 +247,26 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    /** Lê já a notícia i (escolhida no telemóvel); depois continua nos títulos seguintes. */
+    private fun playArticle(pid: String, i: Int) {
+        val p = Repo.load(this, pid) ?: return
+        if (i !in p.articles.indices) return
+        val list = headlines(p).toMutableList()
+        var start = list.indexOfFirst { it.mediaId == "h:$pid:$i" }
+        if (start < 0) {
+            // Título de uma secção retirada: entra na lista só agora (sem áudio do título).
+            val tmp = File(artDir, "h_${pid}_$i.wav")
+            if (!tmp.exists()) WavUtil.writeSilence(tmp, 300)
+            val item = headlineItem(p, i).buildUpon().setUri(Uri.fromFile(tmp)).build()
+            start = list.indexOfFirst { (parseId(it.mediaId)?.i ?: -1) > i }.let { if (it < 0) list.size else it }
+            list.add(start, item)
+        }
+        prefetched.clear()
+        exo.setMediaItems(list, start, 0)
+        exo.prepare()
+        readArticle(pid, i)
+    }
+
     private fun readArticle(pid: String, i: Int) {
         val h = indexOfId("h:$pid:$i")
         if (h < 0) return
@@ -372,6 +392,7 @@ class PlaybackService : MediaLibraryService() {
 
         private val readCmd = SessionCommand(CMD_READ, Bundle.EMPTY)
         private val skipCmd = SessionCommand(CMD_SKIP, Bundle.EMPTY)
+        private val playArticleCmd = SessionCommand(CMD_PLAY_ARTICLE, Bundle.EMPTY)
 
         @Suppress("DEPRECATION")
         private val buttons: ImmutableList<CommandButton> = ImmutableList.of(
@@ -393,7 +414,7 @@ class PlaybackService : MediaLibraryService() {
             controller: MediaSession.ControllerInfo
         ): MediaSession.ConnectionResult {
             val cmds = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
-                .add(readCmd).add(skipCmd).build()
+                .add(readCmd).add(skipCmd).add(playArticleCmd).build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailableSessionCommands(cmds)
                 .setCustomLayout(buttons)
@@ -412,6 +433,10 @@ class PlaybackService : MediaLibraryService() {
                     if (id?.type == 'h') readArticle(id.pid, id.i)
                 }
                 CMD_SKIP -> onSkip()
+                CMD_PLAY_ARTICLE -> {
+                    val pid = args.getString("pid")
+                    if (pid != null) playArticle(pid, args.getInt("i"))
+                }
             }
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
         }
@@ -490,5 +515,6 @@ class PlaybackService : MediaLibraryService() {
         const val ROOT = "root"
         const val CMD_READ = "pt.jorge.jornaisvoz.READ"
         const val CMD_SKIP = "pt.jorge.jornaisvoz.SKIP"
+        const val CMD_PLAY_ARTICLE = "pt.jorge.jornaisvoz.PLAY_ARTICLE"
     }
 }

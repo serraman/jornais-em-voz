@@ -14,6 +14,7 @@ class Article(
     val title: String,
     val lead: String,
     var text: String,
+    var summary: String = "",
 )
 
 class Paper(
@@ -42,6 +43,7 @@ class Paper(
                 put(JSONObject().apply {
                     put("page", a.page); put("section", a.section); put("title", a.title)
                     put("lead", a.lead); put("text", a.text)
+                    if (a.summary.isNotBlank()) put("summary", a.summary)
                 })
             }
         })
@@ -66,7 +68,7 @@ class Paper(
                 p.articles.add(
                     Article(
                         a.optInt("page"), a.optString("section"), a.optString("title"),
-                        a.optString("lead"), a.optString("text")
+                        a.optString("lead"), a.optString("text"), a.optString("summary")
                     )
                 )
             }
@@ -112,7 +114,7 @@ object Repo {
             p.articles.add(
                 Article(
                     a.optInt("page"), a.optString("section"), a.optString("title"),
-                    a.optString("lead"), a.optString("text")
+                    a.optString("lead"), a.optString("text"), a.optString("summary")
                 )
             )
         }

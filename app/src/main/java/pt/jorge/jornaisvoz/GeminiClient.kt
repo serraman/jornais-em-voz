@@ -128,6 +128,25 @@ class GeminiClient(private val apiKey: String, private val model: String) {
         return sb.toString()
     }
 
+    /** Resumo curto (2 ou 3 frases) de uma notícia. */
+    fun summarize(title: String, text: String): String {
+        val prompt = "Resume esta notícia em português de Portugal, em 2 ou 3 frases curtas, " +
+            "só com os factos principais. Responde em JSON: {\"resumo\":\"...\"}.\n\nTÍTULO: $title\n\n${text.take(20_000)}"
+        val schema = JSONObject().put("type", "OBJECT")
+            .put("properties", JSONObject().put("resumo", JSONObject().put("type", "STRING")))
+            .put("required", JSONArray(listOf("resumo")))
+        val parts = JSONArray().put(JSONObject().put("text", prompt))
+        val raw = try {
+            generateParts(parts, schema, 0)
+        } catch (e: BadRequest) {
+            useThinkingLevel = false
+            generateParts(parts, schema, 0)
+        }
+        var t = raw.trim()
+        if (t.startsWith("```")) t = t.substringAfter('\n').substringBeforeLast("```").trim()
+        return JSONObject(t.substring(t.indexOf('{'), t.lastIndexOf('}') + 1)).optString("resumo").trim()
+    }
+
     /** Tira a notícia principal do texto de uma página web. */
     fun extractArticle(pageText: String, url: String): WebArticle {
         val prompt = """

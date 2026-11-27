@@ -121,6 +121,19 @@ object SpeechText {
 }
 
 object WavUtil {
+    /** Cria um WAV curto só com silêncio (16 bits, mono, 22050 Hz). */
+    fun writeSilence(file: File, ms: Int) {
+        val rate = 22050
+        val data = rate * 2 * ms / 1000
+        val b = java.nio.ByteBuffer.allocate(44 + data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        b.put("RIFF".toByteArray()).putInt(36 + data).put("WAVE".toByteArray())
+        b.put("fmt ".toByteArray()).putInt(16).putShort(1).putShort(1).putInt(rate).putInt(rate * 2)
+            .putShort(2).putShort(16)
+        b.put("data".toByteArray()).putInt(data)
+        file.parentFile?.mkdirs()
+        file.writeBytes(b.array())
+    }
+
     /** Acrescenta silêncio no fim de um WAV PCM e corrige o cabeçalho. */
     fun appendSilence(file: File, ms: Int) {
         if (ms <= 0 || !file.exists()) return

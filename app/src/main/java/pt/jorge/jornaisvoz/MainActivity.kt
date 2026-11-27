@@ -197,8 +197,33 @@ class MainActivity : Activity() {
         val items = p.articles.mapIndexed { i, a -> "${i + 1}. ${a.title}" + if (a.page > 0) "  (pág. ${a.page})" else if (a.section.isNotBlank()) "  (${a.section})" else "" }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle(p.name)
-            .setItems(items) { _, which ->
-                val a = p.articles[which]
+            .setItems(items) { _, which -> showArticle(p, which) }
+            .setNegativeButton("Fechar", null)
+            .show()
+    }
+
+    private fun showArticle(p: Paper, i: Int) {
+        val a = p.articles[i]
+        val info = listOfNotNull(
+            a.section.takeIf { it.isNotBlank() },
+            if (a.page > 0) "pág. ${a.page}" else null
+        ).joinToString(" · ")
+        val header = if (info.isNotBlank()) "$info\n\n" else ""
+        val dlg = AlertDialog.Builder(this)
+            .setTitle(a.title)
+            .setMessage(header + if (a.summary.isNotBlank()) a.summary else "A preparar o resumo…")
+            .setPositiveButton("Ouvir esta notícia") { _, _ ->
+                val c = controller
+                if (c == null) {
+                    android.widget.Toast.makeText(this, "O leitor ainda não está pronto. Tente de novo.", android.widget.Toast.LENGTH_SHORT).show()
+                } else {
+                    c.sendCustomCommand(
+                        SessionCommand(PlaybackService.CMD_PLAY_ARTICLE, Bundle.EMPTY),
+                        Bundle().apply { putString("pid", p.id); putInt("i", i) }
+                    )
+                }
+            }
+            .setNeutralButton("Texto completo") { _, _ ->
                 AlertDialog.Builder(this)
                     .setTitle(a.title)
                     .setMessage((if (a.lead.isNotBlank()) a.lead + "\n\n" else "") + a.text)
@@ -207,6 +232,28 @@ class MainActivity : Activity() {
             }
             .setNegativeButton("Fechar", null)
             .show()
+        if (a.summary.isNotBlank()) return
+        val prefs = Prefs(this)
+        Thread {
+            val summary = try {
+                if (prefs.apiKey.isBlank()) throw Exception("sem chave")
+                GeminiClient(prefs.apiKey, prefs.model).summarize(a.title, (a.lead + "\n" + a.text).trim())
+            } catch (e: Exception) {
+                ""
+            }
+            val shown = summary.ifBlank {
+                // Sem resumo do Gemini: mostra a entrada ou o início do texto.
+                a.lead.ifBlank { a.text.take(400).substringBeforeLast(' ') + "…" }
+            }
+            if (summary.isNotBlank()) {
+                a.summary = summary
+                Repo.load(this, p.id)?.let { fresh ->
+                    fresh.articles.getOrNull(i)?.takeIf { it.title == a.title }?.summary = summary
+                    Repo.save(this, fresh)
+                }
+            }
+            runOnUiThread { if (dlg.isShowing) dlg.setMessage(header + shown) }
+        }.start()
     }
 
     private fun chooseSections(p: Paper) {
