@@ -24,6 +24,7 @@ APP_NAME = "Jornais em Voz PC"
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 BASE = "https://generativelanguage.googleapis.com/v1beta"
 PARALLEL = 3
+SECTIONS = ['Política', 'Sociedade', 'Economia', 'Internacional', 'Desporto', 'Cultura', 'Opinião', 'Ciência e Tecnologia', 'Saúde', 'Local', 'Lazer e Estilo de Vida', 'Outros']
 FALLBACK_PREFS = [
     "gemini-3.6-flash", "gemini-flash-lite-latest", "gemini-3.5-flash-lite",
     "gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-3.8-flash",
@@ -113,7 +114,7 @@ Ignora: publicidade, cabeçalhos e rodapés da página, legendas de fotografias,
 Uma caixa lateral com título próprio é um artigo separado.
 Para cada artigo devolve:
 - "tipo": "noticia", "opiniao", "breve" ou "chamada" (chamada = destaque de primeira página ou índice que remete para outra página do jornal);
-- "seccao": a secção do jornal (ex.: Sociedade, Política, Desporto), se estiver visível, senão "";
+- "seccao": classifica o artigo numa destas secções (escolhe sempre uma, mesmo que o jornal use outro nome; usa também o cabeçalho de secção da página): Política, Sociedade, Economia, Internacional, Desporto, Cultura, Opinião, Ciência e Tecnologia, Saúde, Local, Lazer e Estilo de Vida, Outros;
 - "titulo": o título do artigo ("" se o texto é continuação da página anterior e não tem título);
 - "entrada": o subtítulo ou parágrafo de entrada em destaque, se existir, senão "";
 - "texto": o corpo integral do artigo (sem repetir o título nem a entrada);
@@ -131,7 +132,7 @@ def schema():
         "type": "OBJECT",
         "properties": {
             "tipo": {"type": "STRING", "enum": ["noticia", "opiniao", "breve", "chamada"]},
-            "seccao": s, "titulo": s, "entrada": s, "texto": s,
+            "seccao": {"type": "STRING", "enum": SECTIONS}, "titulo": s, "entrada": s, "texto": s,
             "continua_da_anterior": b, "continua_na_seguinte": b,
         },
         "required": ["tipo", "titulo", "texto"],
@@ -347,9 +348,14 @@ def merge_pages(raw_pages):
                 continue
             if not titulo:
                 titulo = " ".join(texto.split()[:10]) + "…"
+            sec = (a.get("seccao") or "").strip()
+            if len(sec) > 40:
+                sec = ""
+            if not sec and merged and merged[-1]["page"] == i + 1:
+                sec = merged[-1]["section"]  # herda a secção do artigo anterior da mesma página
             art = {
                 "page": i + 1,
-                "section": (a.get("seccao") or "").strip(),
+                "section": sec,
                 "title": titulo,
                 "lead": (a.get("entrada") or "").strip(),
                 "text": texto,

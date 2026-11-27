@@ -221,7 +221,8 @@ class ProcessService : Service() {
                 }
                 if (a.text.length < 80) continue
                 val title = a.title.ifBlank { a.text.split(' ').take(10).joinToString(" ") + "…" }
-                val art = Article(i + 1, a.section, title, a.lead, a.text)
+                val sec = a.section.ifBlank { merged.lastOrNull()?.takeIf { it.page == i + 1 }?.section ?: "" }
+                val art = Article(i + 1, sec, title, a.lead, a.text)
                 merged.add(art)
                 pendingContinuation = if (a.continuesNext) art else null
             }

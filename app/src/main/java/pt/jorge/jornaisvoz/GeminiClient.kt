@@ -260,7 +260,7 @@ Ignora: publicidade, cabeçalhos e rodapés da página, legendas de fotografias,
 Uma caixa lateral com título próprio é um artigo separado.
 Para cada artigo devolve:
 - "tipo": "noticia", "opiniao", "breve" ou "chamada" (chamada = destaque de primeira página ou índice que remete para outra página do jornal);
-- "seccao": a secção do jornal (ex.: Sociedade, Política, Desporto), se estiver visível, senão "";
+- "seccao": classifica o artigo numa destas secções (escolhe sempre uma, mesmo que o jornal use outro nome; usa também o cabeçalho de secção da página): Política, Sociedade, Economia, Internacional, Desporto, Cultura, Opinião, Ciência e Tecnologia, Saúde, Local, Lazer e Estilo de Vida, Outros;
 - "titulo": o título do artigo ("" se o texto é continuação da página anterior e não tem título);
 - "entrada": o subtítulo ou parágrafo de entrada em destaque, se existir, senão "";
 - "texto": o corpo integral do artigo (sem repetir o título nem a entrada);
@@ -279,7 +279,7 @@ Responde só com JSON neste formato:
             put("properties", JSONObject().apply {
                 put("tipo", JSONObject().put("type", "STRING")
                     .put("enum", JSONArray(listOf("noticia", "opiniao", "breve", "chamada"))))
-                put("seccao", str()); put("titulo", str()); put("entrada", str()); put("texto", str())
+                put("seccao", JSONObject().put("type", "STRING").put("enum", JSONArray(listOf("Política", "Sociedade", "Economia", "Internacional", "Desporto", "Cultura", "Opinião", "Ciência e Tecnologia", "Saúde", "Local", "Lazer e Estilo de Vida", "Outros")))); put("titulo", str()); put("entrada", str()); put("texto", str())
                 put("continua_da_anterior", bool()); put("continua_na_seguinte", bool())
             })
             put("required", JSONArray(listOf("tipo", "titulo", "texto")))
@@ -313,7 +313,7 @@ private fun parseImpl(raw: String): PageResult {
             list.add(
                 PageArticle(
                     type = a.optString("tipo", "noticia"),
-                    section = a.optString("seccao").trim(),
+                    section = a.optString("seccao").trim().let { if (it.length > 40) "" else it },
                     title = a.optString("titulo").trim(),
                     lead = a.optString("entrada").trim(),
                     text = a.optString("texto").trim(),
