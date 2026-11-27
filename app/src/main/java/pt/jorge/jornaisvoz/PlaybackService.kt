@@ -53,7 +53,7 @@ class PlaybackService : MediaLibraryService() {
     override fun onCreate() {
         super.onCreate()
         artDir.listFiles()?.forEach { it.delete() }
-        tts = TtsSynth(this)
+        currentTts()
         exo = ExoPlayer.Builder(this)
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -286,7 +286,23 @@ class PlaybackService : MediaLibraryService() {
     private suspend fun synthTo(text: String, pid: String, i: Int, k: Int, rate: Float): File? {
         val f = File(artDir, "a_${pid}_${i}_$k.wav")
         if (f.exists() && f.length() > 44) return f
-        return if (tts.synth(text, f, rate)) f else null
+        return if (currentTts().synth(text, f, rate)) f else null
+    }
+
+    private var ttsKey = ""
+
+    /** Recria o motor de voz se o utilizador mudou a voz nas Definições. */
+    private fun currentTts(): TtsSynth {
+        val p = Prefs(this)
+        val key = p.ttsEngine + "|" + p.voiceName
+        if (key != ttsKey) {
+            if (ttsKey.isNotEmpty()) tts.shutdown()
+            tts = TtsSynth(this)
+            ttsKey = key
+            artDir.listFiles()?.forEach { it.delete() }
+            prefetched.clear()
+        }
+        return tts
     }
 
     private fun onTransition(item: MediaItem) {

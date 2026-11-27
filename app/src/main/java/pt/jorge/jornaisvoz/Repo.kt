@@ -201,6 +201,16 @@ class Prefs(ctx: Context) {
         get() = sp.getInt("keepDays", 3)
         set(v) = sp.edit().putInt("keepDays", v.coerceIn(1, 30)).apply()
 
+    /** Motor de voz (pacote) escolhido; vazio = motor por omissão do telemóvel. */
+    var ttsEngine: String
+        get() = sp.getString("ttsEngine", "") ?: ""
+        set(v) = sp.edit().putString("ttsEngine", v).apply()
+
+    /** Nome da voz escolhida; vazio = escolha automática. */
+    var voiceName: String
+        get() = sp.getString("voiceName", "") ?: ""
+        set(v) = sp.edit().putString("voiceName", v).apply()
+
     companion object {
         const val DEFAULT_MODEL = "gemini-3.5-flash-lite"
     }

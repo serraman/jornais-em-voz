@@ -16,7 +16,12 @@ import java.util.concurrent.ConcurrentHashMap
 class TtsSynth(ctx: Context) : TextToSpeech.OnInitListener {
     private val ready = CompletableDeferred<Boolean>()
     private val pending = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
-    private val tts = TextToSpeech(ctx.applicationContext, this)
+    private val prefs = Prefs(ctx)
+    private val wantedVoice = prefs.voiceName
+    private val tts = prefs.ttsEngine.let { eng ->
+        if (eng.isBlank()) TextToSpeech(ctx.applicationContext, this)
+        else TextToSpeech(ctx.applicationContext, this, eng)
+    }
 
     var voiceInfo: String = ""
         private set
@@ -31,7 +36,9 @@ class TtsSynth(ctx: Context) : TextToSpeech.OnInitListener {
             val voices = tts.voices?.filter {
                 it.locale.language == "pt" && it.locale.country == "PT"
             } ?: emptyList()
-            val best = voices.filter { !it.isNetworkConnectionRequired }.maxByOrNull { it.quality }
+            val chosen = if (wantedVoice.isNotBlank()) tts.voices?.firstOrNull { it.name == wantedVoice } else null
+            val best = chosen
+                ?: voices.filter { !it.isNetworkConnectionRequired }.maxByOrNull { it.quality }
                 ?: voices.maxByOrNull { it.quality }
             if (best != null) tts.voice = best
             voiceInfo = tts.voice?.let { "${it.name} (${it.locale})" } ?: "sem voz pt-PT"
